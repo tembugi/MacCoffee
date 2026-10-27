@@ -122,8 +122,10 @@ final class AwakeModel: ObservableObject {
     @Published var keepDisplayOn = false { didSet { applyAssertions() } }
     @Published var preventLock = false { didSet { applyAssertions() } }
     @Published var keepKeyboardLight = false { didSet { applyAssertions() } }
+    /// In lid-closed mode: keep the screen on at minimum brightness instead of turning it off.
+    @Published var keepScreenOnWhenClosed = false { didSet { applyAssertions() } }
     @Published var lowBatteryCutoff: Bool { didSet { UserDefaults.standard.set(lowBatteryCutoff, forKey: "lowBatteryCutoff") } }
-    @Published private(set) var lidClosedMode = false
+    @Published private(set) var lidClosedMode = false { didSet { applyAssertions() } }
     @Published private(set) var lidClosed = false
 
     /// Minutes until everything turns off; 0 means no timer.
@@ -135,8 +137,12 @@ final class AwakeModel: ObservableObject {
     static let timerChoices = [15, 30, 60, 120, 180, 240, 360, 480, 720]
     static let lowBatteryLevel = 10
 
-    var isActive: Bool { preventSleep || keepDisplayOn || preventLock || keepKeyboardLight || lidClosedMode }
-    var allOn: Bool { preventSleep && keepDisplayOn && preventLock && keepKeyboardLight && lidClosedMode }
+    var isActive: Bool {
+        preventSleep || keepDisplayOn || preventLock || keepKeyboardLight || lidClosedMode || keepScreenOnWhenClosed
+    }
+    var allOn: Bool {
+        preventSleep && keepDisplayOn && preventLock && keepKeyboardLight && lidClosedMode && keepScreenOnWhenClosed
+    }
 
     private var systemAssertion = IOPMAssertionID(0)
     private var displayAssertion = IOPMAssertionID(0)
@@ -207,6 +213,7 @@ final class AwakeModel: ObservableObject {
         keepDisplayOn = true
         preventLock = true
         keepKeyboardLight = true
+        keepScreenOnWhenClosed = true
         if !lidClosedMode { lidClosedSetting = true }
     }
 
@@ -215,6 +222,7 @@ final class AwakeModel: ObservableObject {
         keepDisplayOn = false
         preventLock = false
         keepKeyboardLight = false
+        keepScreenOnWhenClosed = false
         timerMinutes = 0
         restoreNormalSleep(askForPassword: askForPassword)
     }
@@ -226,6 +234,7 @@ final class AwakeModel: ObservableObject {
 
     func prepareForQuit() {
         KeyboardLight.keepOn(false)
+        ScreenBrightness.restoreAfterLidOpened()
         restoreNormalSleep(askForPassword: false)
     }
 
@@ -258,10 +267,16 @@ final class AwakeModel: ObservableObject {
         applyAssertions()
         if !closed {
             KeyboardLight.restoreAfterLidOpened()
+            ScreenBrightness.restoreAfterLidOpened()
         } else if lidClosedMode {
-            // Nothing needs the screen or the keyboard light with the lid shut, so save the battery.
-            run("/usr/bin/pmset", "displaysleepnow")
+            // Nothing needs the keyboard light with the lid shut, and the screen only when asked
+            // for, so save the battery.
             KeyboardLight.turnOffForClosedLid()
+            if keepScreenOnWhenClosed {
+                ScreenBrightness.dimForClosedLid()
+            } else {
+                run("/usr/bin/pmset", "displaysleepnow")
+            }
         }
     }
 
@@ -269,14 +284,15 @@ final class AwakeModel: ObservableObject {
 
     private func applyAssertions() {
         let lidOpen = !lidClosed
+        let screenOnBehindLid = lidClosed && lidClosedMode && keepScreenOnWhenClosed
         hold(&systemAssertion, type: "PreventUserIdleSystemSleep", name: "MacCoffee: Prevent Sleep",
              on: preventSleep && lidOpen)
         hold(&displayAssertion, type: "PreventUserIdleDisplaySleep", name: "MacCoffee: Keep Display On",
-             on: (keepDisplayOn || preventLock) && lidOpen)
+             on: ((keepDisplayOn || preventLock) && lidOpen) || screenOnBehindLid)
 
-        // The screen locks when the screen saver starts or the display sleeps, so keep
-        // telling macOS the user is active to hold off both idle timers.
-        let declareActivity = preventLock && lidOpen
+        // The screen locks when the screen saver starts or the display sleeps, and macOS turns
+        // the screen off soon after the lid closes, so keep telling it the user is active.
+        let declareActivity = (preventLock && lidOpen) || screenOnBehindLid
         if declareActivity, activityTimer == nil {
             declareUserActivity()
             let timer = Timer(timeInterval: 30, repeats: true) { _ in
@@ -392,6 +408,44 @@ enum KeyboardLight {
         let sel = NSSelectorFromString(name)
         guard let client, let keyboardID, client.responds(to: sel) else { return nil }
         return (client, keyboardID, sel, unsafeBitCast(client.method(for: sel), to: type))
+    }
+}
+
+// MARK: - Screen brightness
+
+/// The built-in screen's brightness, through DisplayServices: a private framework, as macOS has
+/// no public brightness API for Apple silicon (it's what the brightness keys use).
+@MainActor
+enum ScreenBrightness {
+    /// The lowest step of the brightness keys: as dim as it gets while surely staying lit.
+    static let minimum: Float = 1 / 16
+
+    private typealias GetFn = @convention(c) (CGDirectDisplayID, UnsafeMutablePointer<Float>) -> Int32
+    private typealias SetFn = @convention(c) (CGDirectDisplayID, Float) -> Int32
+    private static let framework = dlopen("/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices", RTLD_NOW)
+    private static let get = dlsym(framework, "DisplayServicesGetBrightness").map { unsafeBitCast($0, to: GetFn.self) }
+    private static let set = dlsym(framework, "DisplayServicesSetBrightness").map { unsafeBitCast($0, to: SetFn.self) }
+    private static var levelBeforeLidClosed: Float?
+
+    static func dimForClosedLid() {
+        guard let display = builtInDisplay, let get, let set else { return }
+        var level: Float = 0
+        guard get(display, &level) == 0, level > minimum else { return }
+        levelBeforeLidClosed = level
+        _ = set(display, minimum)
+    }
+
+    static func restoreAfterLidOpened() {
+        guard let level = levelBeforeLidClosed, let display = builtInDisplay, let set else { return }
+        levelBeforeLidClosed = nil
+        _ = set(display, level)
+    }
+
+    private static var builtInDisplay: CGDirectDisplayID? {
+        var ids = [CGDirectDisplayID](repeating: 0, count: 16)
+        var count: UInt32 = 0
+        guard CGGetOnlineDisplayList(16, &ids, &count) == .success else { return nil }
+        return ids.prefix(Int(count)).first { CGDisplayIsBuiltin($0) != 0 }
     }
 }
 
@@ -621,6 +675,8 @@ struct MenuView: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
                 Text("MacCoffee").font(.system(size: 13, weight: .semibold))
+                Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
+                    .font(.system(size: 11)).foregroundStyle(.tertiary)
                 Spacer()
                 Text(model.isActive ? "On" : "Off").font(.system(size: 12)).foregroundStyle(.secondary)
             }
@@ -654,8 +710,11 @@ struct MenuView: View {
 
             SectionHeader(title: "While the Lid Is Closed")
             SettingRow(icon: "laptopcomputer", title: "Stay Awake",
-                       detail: "Keeps running. Screen and keyboard light turn off to save battery.",
+                       detail: "Keeps running. Keyboard light turns off to save battery.",
                        isOn: $model.lidClosedSetting)
+            SettingRow(icon: "sun.min.fill", title: "Keep Screen On",
+                       detail: model.keepScreenOnWhenClosed ? "Stays on at minimum brightness" : "Turns off to save battery",
+                       isOn: $model.keepScreenOnWhenClosed)
 
             Divider().padding(.vertical, 6)
 
