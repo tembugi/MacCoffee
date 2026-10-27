@@ -2,7 +2,7 @@
 
 A tiny menu bar app that keeps your Mac awake, even with the lid closed.
 
-Close your MacBook, put it in your bag and walk away: downloads, builds, long-running tasks and your iPhone hotspot connection keep going, while the screen and keyboard light stay off to save battery.
+Close your MacBook, put it in your bag and walk away: downloads, builds, long-running tasks and your iPhone hotspot connection keep going, while the keyboard light stays off to save battery.
 
 <p align="center">
   <picture>
@@ -22,7 +22,8 @@ Close your MacBook, put it in your bag and walk away: downloads, builds, long-ru
 
 **While the lid is closed**
 
-- **Stay Awake** – your Mac keeps running with the lid shut, on battery or plugged in. The screen and keyboard light turn off to save battery, and your lid-open settings pick up again when you open it.
+- **Stay Awake** – your Mac keeps running with the lid shut, on battery or plugged in. The keyboard light turns off to save battery, and your lid-open settings pick up again when you open it.
+- **Keep Screen On** – the screen stays on at minimum brightness instead of turning off. Your brightness comes back when you open the lid.
 
 **And also**
 
