@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.4 – 2026-10-29
+- On macOS 27 the menu bar opens and closes the menu like any other: the cup stays highlighted while it's open, and clicking it again closes the menu.
+
 ## 0.2.3 – 2026-10-29
 - Clicking the cup while the menu is open closes it, instead of closing and reopening it.
 
