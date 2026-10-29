@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.3 – 2026-10-29
+- Clicking the cup while the menu is open closes it, instead of closing and reopening it.
+
 ## 0.2.2 – 2026-10-29
 - Turn All On and Turn All Off always look alike, so neither looks like the current state.
 

@@ -57,6 +57,7 @@ final class MenuBarItem: NSObject {
         if let button = item.button {
             button.target = self
             button.action = #selector(togglePanel)
+            button.sendAction(on: [.leftMouseDown, .rightMouseDown]) // on press, like a menu
             button.toolTip = "MacCoffee"
             // The steam sits exactly over the button's image, so it lines up with the cup.
             steam.translatesAutoresizingMaskIntoConstraints = false
@@ -96,6 +97,9 @@ final class MenuBarItem: NSObject {
             panel.close()
             return
         }
+        // Clicking the icon to close the panel takes the focus away from it first, which
+        // already closed it a moment ago: that click mustn't open it again.
+        guard ProcessInfo.processInfo.systemUptime - panel.closedAt > 0.3 else { return }
         panel.show(MenuView(model: model), below: button)
         // The click un-highlights the icon once it ends, so highlight it after that.
         DispatchQueue.main.async { [weak self] in
@@ -115,6 +119,8 @@ final class MenuPanel: NSPanel {
     private var outsideClicks: Any?
     private var sizeChanges: NSObjectProtocol?
     private var closing = false
+    /// When it last closed, in `systemUptime` seconds.
+    private(set) var closedAt: TimeInterval = 0
 
     init() {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
@@ -159,9 +165,15 @@ final class MenuPanel: NSPanel {
                                                              object: host, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.fit(to: host.frame.size) }
         }
-        // Clicks in other apps, including their menu bar icons, close it like a menu.
+        // Clicks in other apps, including their menu bar icons, close it like a menu. The menu bar
+        // belongs to another process (MenuBarAgent), so a click on our own icon shows up here too:
+        // leave that one to the icon, which closes the panel itself.
+        let iconArea = icon.insetBy(dx: -2, dy: -2)
         outsideClicks = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
-            MainActor.assumeIsolated { self?.close() }
+            MainActor.assumeIsolated {
+                guard !iconArea.contains(NSEvent.mouseLocation) else { return }
+                self?.close()
+            }
         }
         makeKeyAndOrderFront(nil)
         invalidateShadow()
@@ -183,6 +195,7 @@ final class MenuPanel: NSPanel {
         orderOut(nil)
         contentView = nil // the panel's views only exist while it's open
         closing = false
+        closedAt = ProcessInfo.processInfo.systemUptime
         onClose?()
     }
 
