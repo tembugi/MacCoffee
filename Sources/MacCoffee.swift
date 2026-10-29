@@ -55,9 +55,15 @@ final class MenuBarItem: NSObject {
         self.model = model
         super.init()
         if let button = item.button {
-            button.target = self
-            button.action = #selector(togglePanel)
-            button.sendAction(on: [.leftMouseDown, .rightMouseDown]) // on press, like a menu
+            if #available(macOS 27, *) {
+                // The menu bar opens and closes the panel itself, highlights the icon while it's
+                // open and lets it take part in menu bar keyboard navigation, like a menu.
+                item.expandedInterfaceDelegate = self
+            } else {
+                button.target = self
+                button.action = #selector(togglePanel)
+                button.sendAction(on: [.leftMouseDown, .rightMouseDown]) // on press, like a menu
+            }
             button.toolTip = "MacCoffee"
             // The steam sits exactly over the button's image, so it lines up with the cup.
             steam.translatesAutoresizingMaskIntoConstraints = false
@@ -69,7 +75,14 @@ final class MenuBarItem: NSObject {
                 steam.heightAnchor.constraint(equalToConstant: CupIcon.size.height),
             ])
         }
-        panel.onClose = { [weak self] in self?.item.button?.highlight(false) }
+        panel.onClose = { [weak self] in
+            guard let self else { return }
+            if #available(macOS 27, *) {
+                item.expandedInterfaceSession?.cancel() // closed by us: tell the menu bar
+            } else {
+                item.button?.highlight(false)
+            }
+        }
 
         // objectWillChange fires just before the new value is stored.
         modelChanges = model.objectWillChange.sink { [weak self] _ in
@@ -91,6 +104,7 @@ final class MenuBarItem: NSObject {
         steam.show(model.lidClosedMode, moving: !model.lidClosed && visible)
     }
 
+    /// Before macOS 27: the icon toggles the panel itself.
     @objc private func togglePanel() {
         guard let button = item.button else { return }
         if panel.isVisible {
@@ -106,6 +120,21 @@ final class MenuBarItem: NSObject {
             guard let self, panel.isVisible else { return }
             button.highlight(true)
         }
+    }
+}
+
+@available(macOS 27, *)
+extension MenuBarItem: @preconcurrency NSStatusItemExpandedInterfaceDelegate {
+    func statusItem(_ statusItem: NSStatusItem, didBegin session: NSStatusItemExpandedInterfaceSession) {
+        guard let button = statusItem.button else {
+            session.cancel()
+            return
+        }
+        panel.show(MenuView(model: model), below: button)
+    }
+
+    func statusItemDidEndExpandedInterfaceSession(_ statusItem: NSStatusItem, animated: Bool) {
+        panel.close()
     }
 }
 
