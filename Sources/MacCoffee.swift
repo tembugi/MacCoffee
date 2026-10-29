@@ -44,11 +44,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 /// The menu bar icon and its panel, in plain AppKit.
 @MainActor
-final class MenuBarItem: NSObject, NSPopoverDelegate {
+final class MenuBarItem: NSObject {
     private let model: AwakeModel
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let steam = SteamView(frame: NSRect(origin: .zero, size: CupIcon.size))
-    private let popover = NSPopover()
+    private let panel = MenuPanel()
     private var modelChanges: AnyCancellable?
 
     init(model: AwakeModel) {
@@ -56,7 +56,7 @@ final class MenuBarItem: NSObject, NSPopoverDelegate {
         super.init()
         if let button = item.button {
             button.target = self
-            button.action = #selector(togglePopover)
+            button.action = #selector(togglePanel)
             button.toolTip = "MacCoffee"
             // The steam sits exactly over the button's image, so it lines up with the cup.
             steam.translatesAutoresizingMaskIntoConstraints = false
@@ -68,8 +68,7 @@ final class MenuBarItem: NSObject, NSPopoverDelegate {
                 steam.heightAnchor.constraint(equalToConstant: CupIcon.size.height),
             ])
         }
-        popover.behavior = .transient
-        popover.delegate = self
+        panel.onClose = { [weak self] in self?.item.button?.highlight(false) }
 
         // objectWillChange fires just before the new value is stored.
         modelChanges = model.objectWillChange.sink { [weak self] _ in
@@ -91,22 +90,122 @@ final class MenuBarItem: NSObject, NSPopoverDelegate {
         steam.show(model.lidClosedMode, moving: !model.lidClosed && visible)
     }
 
-    @objc private func togglePopover() {
+    @objc private func togglePanel() {
         guard let button = item.button else { return }
-        if popover.isShown {
-            popover.performClose(nil)
+        if panel.isVisible {
+            panel.close()
             return
         }
-        let controller = NSHostingController(rootView: MenuView(model: model))
-        controller.sizingOptions = .preferredContentSize
-        popover.contentViewController = controller
-        NSApp.activate()
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        panel.show(MenuView(model: model), below: button)
+        // The click un-highlights the icon once it ends, so highlight it after that.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, panel.isVisible else { return }
+            button.highlight(true)
+        }
+    }
+}
+
+/// The panel under the menu bar icon. Like a menu, it takes the keyboard without making
+/// MacCoffee the active app, so its switches show as active, and it closes when you click
+/// anywhere else or press Esc. (A popover can do neither: clicking a menu bar icon doesn't
+/// activate its app.)
+@MainActor
+final class MenuPanel: NSPanel {
+    var onClose: (() -> Void)?
+    private var outsideClicks: Any?
+    private var sizeChanges: NSObjectProtocol?
+    private var closing = false
+
+    init() {
+        super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        isFloatingPanel = true
+        level = .popUpMenu
+        hidesOnDeactivate = false
+        isReleasedWhenClosed = false
+        backgroundColor = .clear
+        isOpaque = false
+        hasShadow = true
+        collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .ignoresCycle]
     }
 
-    /// The panel's views only exist while it's open.
-    func popoverDidClose(_ notification: Notification) {
-        popover.contentViewController = nil
+    override var canBecomeKey: Bool { true }
+
+    func show(_ content: some View, below button: NSStatusBarButton) {
+        guard let buttonWindow = button.window else { return }
+        let background = NSVisualEffectView()
+        background.material = .menu
+        background.state = .active
+        background.maskImage = Self.roundedMask(radius: 10)
+        let host = NSHostingView(rootView: content)
+        host.translatesAutoresizingMaskIntoConstraints = false
+        background.addSubview(host)
+        NSLayoutConstraint.activate([
+            host.topAnchor.constraint(equalTo: background.topAnchor),
+            host.leadingAnchor.constraint(equalTo: background.leadingAnchor),
+        ])
+        contentView = background
+
+        // Just below the menu bar, left edge under the icon like a menu, kept on screen.
+        let icon = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        let screen = (buttonWindow.screen ?? NSScreen.main)?.visibleFrame ?? icon
+        let size = host.fittingSize
+        let x = min(max(icon.minX, screen.minX + 6), screen.maxX - size.width - 6)
+        let top = buttonWindow.frame.minY - 2
+        setFrame(NSRect(x: x, y: top - size.height, width: size.width, height: size.height), display: true)
+
+        // When a line of text wraps or unwraps, grow or shrink downwards, keeping the top in place.
+        host.postsFrameChangedNotifications = true
+        sizeChanges = NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification,
+                                                             object: host, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.fit(to: host.frame.size) }
+        }
+        // Clicks in other apps, including their menu bar icons, close it like a menu.
+        outsideClicks = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
+            MainActor.assumeIsolated { self?.close() }
+        }
+        makeKeyAndOrderFront(nil)
+        invalidateShadow()
+    }
+
+    private func fit(to size: NSSize) {
+        guard size != frame.size else { return }
+        setFrame(NSRect(x: frame.minX, y: frame.maxY - size.height, width: size.width, height: size.height), display: true)
+        invalidateShadow()
+    }
+
+    override func close() {
+        guard isVisible, !closing else { return }
+        closing = true
+        if let outsideClicks { NSEvent.removeMonitor(outsideClicks) }
+        if let sizeChanges { NotificationCenter.default.removeObserver(sizeChanges) }
+        outsideClicks = nil
+        sizeChanges = nil
+        orderOut(nil)
+        contentView = nil // the panel's views only exist while it's open
+        closing = false
+        onClose?()
+    }
+
+    // Focus moving to another window or app closes it too.
+    override func resignKey() {
+        super.resignKey()
+        close()
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        close()
+    }
+
+    private static func roundedMask(radius: CGFloat) -> NSImage {
+        let edge = radius * 2 + 1
+        let mask = NSImage(size: NSSize(width: edge, height: edge), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+            return true
+        }
+        mask.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+        mask.resizingMode = .stretch
+        return mask
     }
 }
 
