@@ -126,7 +126,13 @@ final class MenuBarItem: NSObject {
 @available(macOS 27, *)
 extension MenuBarItem: @preconcurrency NSStatusItemExpandedInterfaceDelegate {
     func statusItem(_ statusItem: NSStatusItem, didBegin session: NSStatusItemExpandedInterfaceSession) {
-        guard let button = statusItem.button else {
+        // A click on the icon while the panel is open, or the one that just closed it, toggles
+        // it shut instead of opening it again.
+        if panel.isVisible {
+            panel.close() // which cancels this session
+            return
+        }
+        guard let button = statusItem.button, ProcessInfo.processInfo.systemUptime - panel.closedAt > 0.3 else {
             session.cancel()
             return
         }
@@ -194,15 +200,10 @@ final class MenuPanel: NSPanel {
                                                              object: host, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.fit(to: host.frame.size) }
         }
-        // Clicks in other apps, including their menu bar icons, close it like a menu. The menu bar
-        // belongs to another process (MenuBarAgent), so a click on our own icon shows up here too:
-        // leave that one to the icon, which closes the panel itself.
-        let iconArea = icon.insetBy(dx: -2, dy: -2)
+        // Clicks in other apps, including any menu bar icon, close it like a menu. On macOS 27 the
+        // menu bar belongs to another process (MenuBarAgent), so that includes our own icon.
         outsideClicks = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard !iconArea.contains(NSEvent.mouseLocation) else { return }
-                self?.close()
-            }
+            MainActor.assumeIsolated { self?.close() }
         }
         makeKeyAndOrderFront(nil)
         invalidateShadow()
