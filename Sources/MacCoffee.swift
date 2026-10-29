@@ -239,9 +239,6 @@ final class AwakeModel: ObservableObject {
     var isActive: Bool {
         preventSleep || keepDisplayOn || preventLock || keepKeyboardLight || lidClosedMode || keepScreenOnWhenClosed
     }
-    var allOn: Bool {
-        preventSleep && keepDisplayOn && preventLock && keepKeyboardLight && lidClosedMode && keepScreenOnWhenClosed
-    }
 
     private var systemAssertion = IOPMAssertionID(0)
     private var displayAssertion = IOPMAssertionID(0)
@@ -782,15 +779,14 @@ struct MenuView: View {
             .padding(.horizontal, 6)
             .padding(.bottom, 6)
 
+            // Never greyed out: next to a greyed one, the other button looks like the current state.
             HStack(spacing: 8) {
                 Button { model.turnEverythingOn() } label: {
                     Text("Turn All On").frame(maxWidth: .infinity)
                 }
-                .disabled(model.allOn)
                 Button { model.turnEverythingOff(askForPassword: true) } label: {
                     Text("Turn All Off").frame(maxWidth: .infinity)
                 }
-                .disabled(!model.isActive)
             }
             .padding(.horizontal, 6)
             .padding(.bottom, 4)
