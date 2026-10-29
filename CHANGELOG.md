@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.2 – 2026-10-29
+- Turn All On and Turn All Off always look alike, so neither looks like the current state.
+
 ## 0.2.1 – 2026-10-29
 - The menu closes when you click anywhere else or press Esc, and switches that are on show in blue.
 
