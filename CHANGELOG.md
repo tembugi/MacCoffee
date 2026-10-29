@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.5 – 2026-10-29
+- The menu opens in the same place and at the right size every time, instead of every other time being cut off or too tall.
+
 ## 0.2.4 – 2026-10-29
 - On macOS 27 the menu bar opens and closes the menu like any other: the cup stays highlighted while it's open, and clicking it again closes the menu.
 

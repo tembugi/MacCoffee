@@ -178,6 +178,7 @@ final class MenuPanel: NSPanel {
         background.state = .active
         background.maskImage = Self.roundedMask(radius: 10)
         let host = NSHostingView(rootView: content)
+        host.sizingOptions = [.intrinsicContentSize] // the panel follows the content, not the other way round
         host.translatesAutoresizingMaskIntoConstraints = false
         background.addSubview(host)
         NSLayoutConstraint.activate([
@@ -185,13 +186,16 @@ final class MenuPanel: NSPanel {
             host.leadingAnchor.constraint(equalTo: background.leadingAnchor),
         ])
         contentView = background
+        // Size the panel from the laid-out content: an estimate taken before layout depends on
+        // the panel's previous size and came out too tall or too short every other time.
+        background.layoutSubtreeIfNeeded()
+        let size = host.frame.size
 
         // Just below the menu bar, left edge under the icon like a menu, kept on screen.
         let icon = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
         let screen = (buttonWindow.screen ?? NSScreen.main)?.visibleFrame ?? icon
-        let size = host.fittingSize
         let x = min(max(icon.minX, screen.minX + 6), screen.maxX - size.width - 6)
-        let top = buttonWindow.frame.minY - 2
+        let top = screen.maxY - 2
         setFrame(NSRect(x: x, y: top - size.height, width: size.width, height: size.height), display: true)
 
         // When a line of text wraps or unwraps, grow or shrink downwards, keeping the top in place.
